@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.environ["DESKPOP_HOME"] = tempfile.mkdtemp()
+os.environ["DESKPOP_LANG"] = "en"
 sys.path.insert(0, os.path.join(HERE, ".."))
 import deskpop as d  # noqa: E402
 
@@ -49,6 +50,29 @@ def test_agent_hooks():
     texts = [i["text"] for i in d.pending()]
     assert texts == ["Claude needs permission to use Bash", "Claude Code finished (app)",
                      "Codex finished: Rename done.", "Claude Code finished (session)"], texts
+
+
+def test_lang_setting_and_bilingual_hooks():
+    os.environ.pop("DESKPOP_LANG")
+    try:
+        assert d.set_lang("zh-TW+en") == d.get_lang() == "zh-TW+en"
+        d.ack_all()
+        d.from_claude_hook('{"hook_event_name":"Notification","message":"Claude is waiting for your input","session_id":"s9"}')
+        d.from_claude_hook('{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash","session_id":"s8"}')
+        d.from_claude_hook('{"hook_event_name":"Stop","cwd":"/w/app"}')
+        texts = [i["text"] for i in d.pending()]
+        assert texts == ["Claude 在等你回覆 · Claude is waiting for your input",
+                         "Claude 需要你核准使用 Bash · Claude needs your permission to use Bash",
+                         "Claude Code 完成了 · finished (app)"], texts
+        d.set_lang("en")
+        assert d.get_lang() == "en" and d._cc_text("Claude is waiting for your input") == "Claude is waiting for your input"
+        try:
+            d.set_lang("xx"); assert False
+        except ValueError:
+            pass
+        assert d.detect_lang() in d.TEXT
+    finally:
+        os.environ["DESKPOP_LANG"] = "en"
 
 
 if __name__ == "__main__":

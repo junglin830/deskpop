@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -29,13 +30,14 @@ import traceback
 import uuid
 import webbrowser
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 HOME = os.environ.get("DESKPOP_HOME") or os.path.join(os.path.expanduser("~"), ".deskpop")
 QUEUE = os.path.join(HOME, "queue.json")
 ERR_LOG = os.path.join(HOME, "error.log")
 KEEP_ACKED = 200
 LEVELS = ("alert", "warn", "info", "ok")
+CONFIG = os.path.join(HOME, "config.json")
 
 
 # ----------------------------------------------------------------- queue
@@ -154,7 +156,92 @@ TEXT = {
     "zh-TW": {"title": "通知中心", "count": "%d 則", "ok": "知道了", "copy": "複製", "open": "開啟"},
     "zh-CN": {"title": "通知中心", "count": "%d 条", "ok": "知道了", "copy": "复制", "open": "打开"},
     "ja": {"title": "通知", "count": "%d 件", "ok": "OK", "copy": "コピー", "open": "開く"},
+    "zh-TW+en": {"title": "通知中心 Notifications", "count": "%d 則", "ok": "知道了 Got it",
+                 "copy": "複製 Copy", "open": "開啟 Open"},
 }
+LANG_CYCLE = ("zh-TW+en", "zh-TW", "en")  # what the header toggle cycles through
+LANG_BADGE = {"zh-TW+en": "中/EN", "zh-TW": "中", "zh-CN": "简", "en": "EN", "ja": "日"}
+MSG = {
+    "en": {"cc_attn": "Claude Code needs your attention", "cc_done": "Claude Code finished (%s)",
+           "codex_done": "Codex finished"},
+    "zh-TW": {"cc_attn": "Claude Code 需要你處理", "cc_done": "Claude Code 完成了（%s）", "codex_done": "Codex 完成了"},
+    "zh-CN": {"cc_attn": "Claude Code 需要你处理", "cc_done": "Claude Code 完成了（%s）", "codex_done": "Codex 完成了"},
+    "ja": {"cc_attn": "Claude Code が確認を待っています", "cc_done": "Claude Code 完了（%s）", "codex_done": "Codex 完了"},
+    "zh-TW+en": {"cc_attn": "Claude Code 需要你處理 · needs your attention",
+                 "cc_done": "Claude Code 完成了 · finished (%s)", "codex_done": "Codex 完成了 · finished"},
+}
+# Claude Code's own English notification messages -> Chinese (shown in zh modes).
+_CC_ZH = [(r"^Claude is waiting for your input$", "Claude 在等你回覆"),
+          (r"^Claude needs your permission to use (.+)$", r"Claude 需要你核准使用 \1")]
+
+
+def detect_lang():
+    """System UI language -> default. Traditional Chinese systems get bilingual 中英."""
+    code = ""
+    try:
+        if os.name == "nt":
+            import ctypes
+            import locale
+            code = locale.windows_locale.get(ctypes.windll.kernel32.GetUserDefaultUILanguage(), "")
+        else:
+            import locale
+            code = os.environ.get("LANG") or (locale.getlocale()[0] or "")
+    except Exception:
+        pass
+    code = code.replace("-", "_").lower()
+    if code.startswith("zh"):
+        return "zh-CN" if code in ("zh_cn", "zh_sg") or "hans" in code else "zh-TW+en"
+    if code.startswith("ja"):
+        return "ja"
+    return "en"
+
+
+def get_lang():
+    """Priority: DESKPOP_LANG env > saved setting (deskpop lang ...) > system language."""
+    env = os.environ.get("DESKPOP_LANG", "")
+    if env in TEXT:
+        return env
+    try:
+        with open(CONFIG, encoding="utf-8") as f:
+            saved = json.load(f).get("lang", "")
+        if saved in TEXT:
+            return saved
+    except (OSError, ValueError, AttributeError):
+        pass
+    return detect_lang()
+
+
+def set_lang(lang):
+    if lang not in TEXT:
+        raise ValueError("unknown language %r, choose from %s" % (lang, ", ".join(sorted(TEXT))))
+    os.makedirs(HOME, exist_ok=True)
+    try:
+        with open(CONFIG, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        cfg = {}
+    cfg["lang"] = lang
+    fd, tmp = tempfile.mkstemp(dir=HOME, suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, CONFIG)
+    return lang
+
+
+def _msg(key, lang=None):
+    lang = lang or get_lang()
+    return MSG.get(lang, MSG["en"])[key]
+
+
+def _cc_text(message, lang=None):
+    lang = lang or get_lang()
+    if not lang.startswith("zh"):
+        return message
+    for pat, zh in _CC_ZH:
+        if re.match(pat, message):
+            zh = re.sub(pat, zh, message)
+            return zh + " · " + message if lang == "zh-TW+en" else zh
+    return message
 THEME = {"bg": "#1c1c1e", "card": "#2c2c2e", "border": "#38383a", "fg": "#f5f5f7", "dim": "#8e8e93",
          "accent": "#0a84ff",
          "level": {"alert": "#ff453a", "warn": "#ff9f0a", "info": "#0a84ff", "ok": "#30d158"}}
@@ -208,7 +295,7 @@ def _text_cells(s):
     return sum(2 if ord(ch) > 0x2E7F else 1 for ch in s)  # CJK / full width = 2 cells
 
 
-def run(lang="en", max_visible=4, auto_ack_minutes=0, poll_ms=1500, auto_open=False):
+def run(lang=None, max_visible=4, auto_ack_minutes=0, poll_ms=1500, auto_open=False):
     """Run the window loop. auto_ack_minutes=0 keeps notifications until acknowledged."""
     # pythonw has no console: stdout/stderr are None and any print (even Tk's own error
     # handler) would raise a second exception that kills the loop silently.
@@ -218,7 +305,9 @@ def run(lang="en", max_visible=4, auto_ack_minutes=0, poll_ms=1500, auto_open=Fa
         sys.stderr = _Null()
     import tkinter as tk
 
-    L = TEXT.get(lang, TEXT["en"])
+    lang = lang if lang in TEXT else get_lang()
+    st_lang = {"v": lang}
+    L = dict(TEXT[lang])
     F = _font(lang)
     T = THEME
     root = tk.Tk()
@@ -247,9 +336,31 @@ def run(lang="en", max_visible=4, auto_ack_minutes=0, poll_ms=1500, auto_open=Fa
     outer.pack(fill="both", expand=True)
     head = tk.Frame(outer, bg=T["bg"])
     head.pack(fill="x", padx=14, pady=(12, 6))
-    tk.Label(head, text=L["title"], bg=T["bg"], fg=T["fg"], font=(F, 11, "bold")).pack(side="left")
+    title = tk.Label(head, text=L["title"], bg=T["bg"], fg=T["fg"], font=(F, 11, "bold"))
+    title.pack(side="left")
     count = tk.Label(head, text="", bg=T["bg"], fg=T["dim"], font=(F, 9))
     count.pack(side="right")
+
+    def switch_lang():
+        """Header toggle: 中/EN -> 中 -> EN -> ... ; the choice is saved for next start."""
+        cur = st_lang["v"]
+        nxt = LANG_CYCLE[(LANG_CYCLE.index(cur) + 1) % len(LANG_CYCLE)] if cur in LANG_CYCLE else LANG_CYCLE[0]
+        try:
+            set_lang(nxt)
+        except Exception as e:
+            _log_err("set_lang", e)
+        st_lang["v"] = nxt
+        L.clear()
+        L.update(TEXT[nxt])
+        title.configure(text=L["title"])
+        badge.configure(text=LANG_BADGE.get(nxt, nxt))
+        st["sig"] = None
+        tick(reschedule=False)
+
+    badge = tk.Button(head, text=LANG_BADGE.get(lang, lang), command=switch_lang, bg=T["card"], fg=T["dim"],
+                      relief="flat", bd=0, padx=6, pady=1, font=(F, 8), cursor="hand2",
+                      activebackground=T["border"], activeforeground=T["fg"])
+    badge.pack(side="right", padx=(0, 8))
     body = tk.Frame(outer, bg=T["bg"])
     body.pack(fill="both", expand=True, padx=10, pady=(0, 12))
     st = {"shown": False, "sig": None, "seen": {}}
@@ -366,9 +477,10 @@ def from_claude_hook(raw):
     event = d.get("hook_event_name") or ""
     where = os.path.basename((d.get("cwd") or "").rstrip("/\\")) or "session"
     if event == "Notification":
-        return push(d.get("message") or "Claude Code needs your attention", "warn", source="claude-code",
+        msg = d.get("message") or ""
+        return push(_cc_text(msg) if msg else _msg("cc_attn"), "warn", source="claude-code",
                     dedup_key="cc-notify-" + str(d.get("session_id", "")))
-    return push("Claude Code finished (%s)" % where, "ok", source="claude-code")
+    return push(_msg("cc_done") % where, "ok", source="claude-code")
 
 
 def from_codex_notify(raw):
@@ -378,7 +490,7 @@ def from_codex_notify(raw):
     except ValueError:
         d = {}
     msg = (d.get("last-assistant-message") or "").strip()
-    text = "Codex finished" + (": " + msg[:300] if msg else "")
+    text = _msg("codex_done") + (": " + msg[:300] if msg else "")
     return push(text, "ok", source="codex")
 
 
@@ -393,13 +505,16 @@ def main(argv=None):
     p.add_argument("--source", default="", help="short label, e.g. claude-code")
     p.add_argument("--dedup", default="", help="skip if a pending message has the same key")
     r = sub.add_parser("run", help="show the notification window")
-    r.add_argument("--lang", default=os.environ.get("DESKPOP_LANG", "en"), choices=sorted(TEXT))
+    r.add_argument("--lang", default=None, choices=sorted(TEXT),
+                   help="UI language (default: saved setting, else system language; Chinese systems = zh-TW+en)")
     r.add_argument("--max-visible", type=int, default=4)
     r.add_argument("--auto-ack", type=float, default=0, help="minutes before a shown message auto-dismisses (0=never)")
     r.add_argument("--auto-open", action="store_true", help="open attached URL/file as soon as it is shown")
     sub.add_parser("claude-hook", help="read a Claude Code hook payload from stdin")
     cx = sub.add_parser("codex-notify", help="handle a Codex notify payload (JSON argument)")
     cx.add_argument("payload", nargs="?", default="{}")
+    lg = sub.add_parser("lang", help="show or save the UI language")
+    lg.add_argument("value", nargs="?", choices=sorted(TEXT))
     sub.add_parser("list", help="print pending notifications")
     sub.add_parser("clear", help="acknowledge everything")
     a = ap.parse_args(argv)
@@ -416,6 +531,8 @@ def main(argv=None):
         from_claude_hook(sys.stdin.read())
     elif a.cmd == "codex-notify":
         from_codex_notify(a.payload)
+    elif a.cmd == "lang":
+        print(set_lang(a.value) if a.value else get_lang())
     elif a.cmd == "list":
         for i in pending():
             print("%s %-5s %s  %s" % (i["ts"], i["level"], i["id"], i["text"].replace("\n", " ")[:80]))

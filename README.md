@@ -16,7 +16,10 @@ approval while you were making coffee, you never see it. deskpop keeps every mes
 - Ready-made hooks for **Claude Code** and **Codex**.
 - Any process can push: a cross-process locked JSON queue, written atomically — 30 parallel pushes, none lost.
 - Survives `pythonw` (no console): errors go to `~/.deskpop/error.log` and the loop never dies silently.
-- UI in English, 繁體中文, 简体中文, 日本語. Standard library only (tkinter), Python 3.8+.
+- UI in English, 繁體中文, 简体中文, 日本語, or **bilingual 中文 + English** (default on Traditional Chinese systems).
+  Click the language badge in the header to switch (中/EN → 中 → EN); the choice is saved.
+  Agent messages are translated too (e.g. "Claude is waiting for your input" → "Claude 在等你回覆").
+- Standard library only (tkinter), Python 3.8+.
 
 ## Install
 
@@ -45,7 +48,7 @@ deskpop.push("Nightly backup done", level="ok", source="backup")
 Start it at login on Windows:
 
 ```powershell
-schtasks /Create /SC ONLOGON /TN deskpop /TR "pythonw C:\tools\deskpop.py run --lang zh-TW"
+schtasks /Create /SC ONLOGON /TN deskpop /TR "pythonw C:\tools\deskpop.py run"
 ```
 
 ## Claude Code
@@ -77,7 +80,9 @@ Codex appends its JSON payload; deskpop shows "Codex finished: <last message>".
 
 | | |
 |---|---|
-| `run --lang en\|zh-TW\|zh-CN\|ja` | UI language (or `DESKPOP_LANG`) |
+| `run --lang en\|zh-TW\|zh-TW+en\|zh-CN\|ja` | UI language for this run |
+| `deskpop lang zh-TW+en` | save the default language (`deskpop lang` prints the current one) |
+| `DESKPOP_LANG` | overrides the saved setting; otherwise the system language decides (Chinese → `zh-TW+en`) |
 | `run --max-visible 4` | cards shown at once (the counter shows the total) |
 | `run --auto-ack 10` | auto-dismiss a *shown* card after N minutes (default: never) |
 | `run --auto-open` | open the attached URL/file as soon as the card appears |
