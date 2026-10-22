@@ -29,7 +29,7 @@ import traceback
 import uuid
 import webbrowser
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 HOME = os.environ.get("DESKPOP_HOME") or os.path.join(os.path.expanduser("~"), ".deskpop")
 QUEUE = os.path.join(HOME, "queue.json")

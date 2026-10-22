@@ -18,6 +18,15 @@ approval while you were making coffee, you never see it. deskpop keeps every mes
 - Survives `pythonw` (no console): errors go to `~/.deskpop/error.log` and the loop never dies silently.
 - UI in English, 繁體中文, 简体中文, 日本語. Standard library only (tkinter), Python 3.8+.
 
+## Install
+
+```bash
+pip install git+https://github.com/junglin830/deskpop
+deskpop --help
+```
+
+Or just copy the single `.py` file — it has no dependencies.
+
 ## Quick start
 
 ```bash
